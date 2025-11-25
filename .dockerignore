@@ -1,0 +1,57 @@
+# Игнорируем временные файлы и директории
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git/
+.mypy_cache/
+.pytest_cache/
+.hypothesis/
+
+# Игнорируем файлы IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Игнорируем выходные директории
+output/
+demo_output/
+examples/test_java_project/target/
+
+# Игнорируем большие файлы и документацию
+*.pdf
+*.doc
+*.docx
+*.ppt
+*.pptx
+
+# Игнорируем системные файлы
+.DS_Store
+Thumbs.db
+
+# Игнорируем логи и временные данные
+*.log
+*.tmp
+*.temp
+
+# Игнорируем конфигурационные файлы, которые могут содержать секреты
+*.env
+.env.local
+.env.production
+secrets.yml
+config.yml

@@ -1,0 +1,175 @@
+pipeline {
+    agent any
+    tools {
+        nodejs 'NodeJS'
+    }
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
+    }
+    environment {
+        DOCKER_REGISTRY = '{{ docker_registry }}'
+        NEXUS_URL = '{{ nexus_url }}'
+        SONAR_URL = '{{ sonar_url }}'
+    }
+    stages {
+        stage('Build') {
+            steps {
+                script {
+                    echo 'Building {{ project_name }}...'
+                    // Restore cached node_modules
+                    unstash 'node-cache'
+                    {% if build_tool == "yarn" %}
+                    sh 'yarn install --frozen-lockfile'
+                    sh 'yarn build'
+                    {% elif build_tool == "pnpm" %}
+                    sh 'pnpm install --frozen-lockfile'
+                    sh 'pnpm build'
+                    {% else %}
+                    sh 'npm ci'
+                    sh 'npm run build'
+                    {% endif %}
+                }
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: 'dist/**/*', fingerprint: true
+                    // Stash node_modules for caching
+                    {% if build_tool == "yarn" %}
+                    stash name: 'node-cache', includes: '.yarn/cache/**/*, node_modules/**/*'
+                    {% elif build_tool == "pnpm" %}
+                    stash name: 'node-cache', includes: '.pnpm-store/**/*, node_modules/**/*'
+                    {% else %}
+                    stash name: 'node-cache', includes: 'node_modules/**/*'
+                    {% endif %}
+                }
+            }
+        }
+        stage('Test') {
+            parallel {
+                stage('Unit Tests') {
+                    steps {
+                        script {
+                            echo 'Running unit tests...'
+                            {% if build_tool == "yarn" %}
+                            sh 'yarn test:unit'
+                            {% elif build_tool == "pnpm" %}
+                            sh 'pnpm test:unit'
+                            {% else %}
+                            sh 'npm run test:unit'
+                            {% endif %}
+                        }
+                    }
+                    post {
+                        always {
+                            junit '**/test-results/*.xml'
+                        }
+                    }
+                }
+                stage('Integration Tests') {
+                    steps {
+                        script {
+                            echo 'Running integration tests...'
+                            {% if build_tool == "yarn" %}
+                            sh 'yarn test:integration'
+                            {% elif build_tool == "pnpm" %}
+                            sh 'pnpm test:integration'
+                            {% else %}
+                            sh 'npm run test:integration'
+                            {% endif %}
+                        }
+                    }
+                    post {
+                        always {
+                            junit '**/test-results/*.xml'
+                        }
+                    }
+                }
+            }
+        }
+        stage('Code Analysis') {
+            steps {
+                script {
+                    echo 'Running code analysis with SonarQube...'
+                    withSonarQubeEnv('SonarQube') {
+                        {% if build_tool == "yarn" %}
+                        sh 'yarn test:coverage'
+                        {% elif build_tool == "pnpm" %}
+                        sh 'pnpm test:coverage'
+                        {% else %}
+                        sh 'npm run test:coverage'
+                        {% endif %}
+                        sh 'sonar-scanner -Dsonar.projectKey={{ project_name }}'
+                    }
+                }
+            }
+        }
+        stage('Docker Build') {
+            steps {
+                script {
+                    echo 'Building Docker image with multi-stage build...'
+                    sh '''
+                        docker build -t {{ project_name }}:${BUILD_NUMBER} -f Dockerfile.multi-stage .
+                        docker tag {{ project_name }}:${BUILD_NUMBER} ${DOCKER_REGISTRY}/{{ project_name }}:${BUILD_NUMBER}
+                    '''
+                }
+            }
+        }
+        stage('Publish Artifacts') {
+            steps {
+                script {
+                    echo 'Publishing artifacts...'
+                    {% if build_tool == "yarn" %}
+                    sh 'yarn publish --non-interactive'
+                    {% elif build_tool == "pnpm" %}
+                    sh 'pnpm publish'
+                    {% else %}
+                    sh 'npm publish'
+                    {% endif %}
+                    sh 'docker push ${DOCKER_REGISTRY}/{{ project_name }}:${BUILD_NUMBER}'
+                }
+            }
+        }
+        stage('Deploy to Staging') {
+            when {
+                branch 'develop'
+            }
+            steps {
+                script {
+                    echo 'Deploying to staging environment...'
+                    sh 'kubectl set image deployment/{{ project_name }} {{ project_name }}={{ docker_registry }}/{{ project_name }}:${BUILD_NUMBER} -n staging'
+                }
+            }
+        }
+        stage('Deploy to Production') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    echo 'Deploying to production environment...'
+                    sh 'kubectl set image deployment/{{ project_name }} {{ project_name }}={{ docker_registry }}/{{ project_name }}:${BUILD_NUMBER} -n production'
+                }
+            }
+        }
+    }
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            emailext (
+                subject: "SUCCESS: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+                body: "Project ${project_name} built successfully. Build URL: ${env.BUILD_URL}",
+                to: "${env.CHANGE_AUTHOR_EMAIL}"
+            )
+        }
+        failure {
+            emailext (
+                subject: "FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+                body: "Project ${project_name} build failed. Build URL: ${env.BUILD_URL}",
+                to: "${env.CHANGE_AUTHOR_EMAIL}"
+            )
+        }
+    }
+}

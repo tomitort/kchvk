@@ -1,0 +1,180 @@
+pipeline {
+    agent any
+    tools {
+        python 'Python3'
+    }
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
+    }
+    environment {
+        DOCKER_REGISTRY = '{{ docker_registry }}'
+        NEXUS_URL = '{{ nexus_url }}'
+        SONAR_URL = '{{ sonar_url }}'
+    }
+    stages {
+        stage('Build') {
+            steps {
+                script {
+                    echo 'Building {{ project_name }}...'
+                    // Restore cached Python packages
+                    {% if build_tool == "poetry" %}
+                    unstash 'poetry-cache'
+                    sh 'poetry install --no-dev'
+                    sh 'poetry build'
+                    {% elif build_tool == "pipenv" %}
+                    unstash 'pipenv-cache'
+                    sh 'pipenv install --deploy'
+                    sh 'pipenv run python setup.py build'
+                    {% else %}
+                    unstash 'pip-cache'
+                    sh 'pip install -r requirements.txt'
+                    sh 'python setup.py build'
+                    {% endif %}
+                }
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: 'dist/**/*', fingerprint: true
+                    // Stash Python packages for caching
+                    {% if build_tool == "poetry" %}
+                    stash name: 'poetry-cache', includes: '.venv/**/*, dist/**/*'
+                    {% elif build_tool == "pipenv" %}
+                    stash name: 'pipenv-cache', includes: '.venv/**/*, dist/**/*'
+                    {% else %}
+                    stash name: 'pip-cache', includes: 'dist/**/*'
+                    {% endif %}
+                }
+            }
+        }
+        stage('Test') {
+            parallel {
+                stage('Unit Tests') {
+                    steps {
+                        script {
+                            echo 'Running unit tests...'
+                            {% if build_tool == "poetry" %}
+                            sh 'poetry run pytest tests/unit -v --junitxml=test-results/unit.xml'
+                            {% elif build_tool == "pipenv" %}
+                            sh 'pipenv run pytest tests/unit -v --junitxml=test-results/unit.xml'
+                            {% else %}
+                            sh 'pytest tests/unit -v --junitxml=test-results/unit.xml'
+                            {% endif %}
+                        }
+                    }
+                    post {
+                        always {
+                            junit 'test-results/unit.xml'
+                        }
+                    }
+                }
+                stage('Integration Tests') {
+                    steps {
+                        script {
+                            echo 'Running integration tests...'
+                            {% if build_tool == "poetry" %}
+                            sh 'poetry run pytest tests/integration -v --junitxml=test-results/integration.xml'
+                            {% elif build_tool == "pipenv" %}
+                            sh 'pipenv run pytest tests/integration -v --junitxml=test-results/integration.xml'
+                            {% else %}
+                            sh 'pytest tests/integration -v --junitxml=test-results/integration.xml'
+                            {% endif %}
+                        }
+                    }
+                    post {
+                        always {
+                            junit 'test-results/integration.xml'
+                        }
+                    }
+                }
+            }
+        }
+        stage('Code Analysis') {
+            steps {
+                script {
+                    echo 'Running code analysis with SonarQube...'
+                    withSonarQubeEnv('SonarQube') {
+                        {% if build_tool == "poetry" %}
+                        sh 'poetry run coverage run -m pytest'
+                        sh 'poetry run coverage xml'
+                        {% elif build_tool == "pipenv" %}
+                        sh 'pipenv run coverage run -m pytest'
+                        sh 'pipenv run coverage xml'
+                        {% else %}
+                        sh 'coverage run -m pytest'
+                        sh 'coverage xml'
+                        {% endif %}
+                        sh 'sonar-scanner -Dsonar.projectKey={{ project_name }} -Dsonar.python.coverage.reportPaths=coverage.xml'
+                    }
+                }
+            }
+        }
+        stage('Docker Build') {
+            steps {
+                script {
+                    echo 'Building Docker image with multi-stage build...'
+                    sh '''
+                        docker build -t {{ project_name }}:${BUILD_NUMBER} -f Dockerfile.multi-stage .
+                        docker tag {{ project_name }}:${BUILD_NUMBER} ${DOCKER_REGISTRY}/{{ project_name }}:${BUILD_NUMBER}
+                    '''
+                }
+            }
+        }
+        stage('Publish Artifacts') {
+            steps {
+                script {
+                    echo 'Publishing artifacts...'
+                    {% if build_tool == "poetry" %}
+                    sh 'poetry publish --username $NEXUS_USERNAME --password $NEXUS_PASSWORD'
+                    {% elif build_tool == "pipenv" %}
+                    sh 'pipenv run twine upload dist/* --username $NEXUS_USERNAME --password $NEXUS_PASSWORD'
+                    {% else %}
+                    sh 'twine upload dist/* --username $NEXUS_USERNAME --password $NEXUS_PASSWORD'
+                    {% endif %}
+                    sh 'docker push ${DOCKER_REGISTRY}/{{ project_name }}:${BUILD_NUMBER}'
+                }
+            }
+        }
+        stage('Deploy to Staging') {
+            when {
+                branch 'develop'
+            }
+            steps {
+                script {
+                    echo 'Deploying to staging environment...'
+                    sh 'kubectl set image deployment/{{ project_name }} {{ project_name }}={{ docker_registry }}/{{ project_name }}:${BUILD_NUMBER} -n staging'
+                }
+            }
+        }
+        stage('Deploy to Production') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    echo 'Deploying to production environment...'
+                    sh 'kubectl set image deployment/{{ project_name }} {{ project_name }}={{ docker_registry }}/{{ project_name }}:${BUILD_NUMBER} -n production'
+                }
+            }
+        }
+    }
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            emailext (
+                subject: "SUCCESS: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+                body: "Project ${project_name} built successfully. Build URL: ${env.BUILD_URL}",
+                to: "${env.CHANGE_AUTHOR_EMAIL}"
+            )
+        }
+        failure {
+            emailext (
+                subject: "FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+                body: "Project ${project_name} build failed. Build URL: ${env.BUILD_URL}",
+                to: "${env.CHANGE_AUTHOR_EMAIL}"
+            )
+        }
+    }
+}

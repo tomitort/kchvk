@@ -1,0 +1,127 @@
+pipeline {
+    agent any
+    tools {
+        maven 'M3'
+        jdk 'JDK11'
+    }
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
+    }
+    stages {
+        stage('Build') {
+            steps {
+                script {
+                    echo 'Building test_java_project...'
+                    sh 'mvn clean compile -DskipTests'
+                }
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: '**/target/*.jar', fingerprint: true
+                }
+            }
+        }
+        stage('Test') {
+            parallel {
+                stage('Unit Tests') {
+                    steps {
+                        script {
+                            echo 'Running unit tests...'
+                            sh 'mvn test'
+                        }
+                    }
+                    post {
+                        always {
+                            junit '**/target/surefire-reports/*.xml'
+                        }
+                    }
+                }
+                stage('Integration Tests') {
+                    steps {
+                        script {
+                            echo 'Running integration tests...'
+                            sh 'mvn verify -DskipUnitTests'
+                        }
+                    }
+                    post {
+                        always {
+                            junit '**/target/failsafe-reports/*.xml'
+                        }
+                    }
+                }
+            }
+        }
+        stage('Code Analysis') {
+            steps {
+                script {
+                    echo 'Running code analysis with SonarQube...'
+                    withSonarQubeEnv('SonarQube') {
+                        sh 'mvn sonar:sonar -Dsonar.projectKey=test_java_project'
+                    }
+                }
+            }
+        }
+        stage('Docker Build') {
+            steps {
+                script {
+                    echo 'Building Docker image...'
+                    sh '''
+                        docker build -t test_java_project:${BUILD_NUMBER} .
+                        docker tag test_java_project:${BUILD_NUMBER} registry.example.com/test_java_project:${BUILD_NUMBER}
+                    '''
+                }
+            }
+        }
+        stage('Publish Artifacts') {
+            steps {
+                script {
+                    echo 'Publishing artifacts to Nexus...'
+                    sh 'mvn deploy -DskipTests'
+                    sh 'docker push registry.example.com/test_java_project:${BUILD_NUMBER}'
+                }
+            }
+        }
+        stage('Deploy to Staging') {
+            when {
+                branch 'develop'
+            }
+            steps {
+                script {
+                    echo 'Deploying to staging environment...'
+                    sh 'kubectl set image deployment/test_java_project test_java_project=registry.example.com/test_java_project:${BUILD_NUMBER} -n staging'
+                }
+            }
+        }
+        stage('Deploy to Production') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    echo 'Deploying to production environment...'
+                    sh 'kubectl set image deployment/test_java_project test_java_project=registry.example.com/test_java_project:${BUILD_NUMBER} -n production'
+                }
+            }
+        }
+    }
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            emailext (
+                subject: "SUCCESS: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+                body: "Project ${project_name} built successfully. Build URL: ${env.BUILD_URL}",
+                to: "${env.CHANGE_AUTHOR_EMAIL}"
+            )
+        }
+        failure {
+            emailext (
+                subject: "FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+                body: "Project ${project_name} build failed. Build URL: ${env.BUILD_URL}",
+                to: "${env.CHANGE_AUTHOR_EMAIL}"
+            )
+        }
+    }
+}

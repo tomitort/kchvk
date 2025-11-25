@@ -1,0 +1,158 @@
+stages:
+  - build
+  - test
+  - code_analysis
+  - docker_build
+  - publish
+  - deploy_staging
+  - deploy_production
+
+variables:
+  PROJECT_NAME: "{{ project_name }}"
+  DOCKER_REGISTRY: "{{ docker_registry }}"
+
+.build_template: &build_template
+  stage: build
+  script:
+    - echo "Building $PROJECT_NAME..."
+    {% if build_tool == "yarn" %}
+    - yarn install --frozen-lockfile
+    - yarn build
+    {% elif build_tool == "pnpm" %}
+    - pnpm install --frozen-lockfile
+    - pnpm build
+    {% else %}
+    - npm ci
+    - npm run build
+    {% endif %}
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
+
+.test_template: &test_template
+  stage: test
+  script:
+    - echo "Running tests..."
+    {% if build_tool == "yarn" %}
+    - yarn test:unit
+    {% elif build_tool == "pnpm" %}
+    - pnpm test:unit
+    {% else %}
+    - npm run test:unit
+    {% endif %}
+  artifacts:
+    reports:
+      junit:
+        - test-results/*.xml
+
+.code_analysis_template: &code_analysis_template
+  stage: code_analysis
+  script:
+    - echo "Running code analysis with SonarQube..."
+    {% if build_tool == "yarn" %}
+    - yarn test:coverage
+    {% elif build_tool == "pnpm" %}
+    - pnpm test:coverage
+    {% else %}
+    - npm run test:coverage
+    {% endif %}
+    - sonar-scanner -Dsonar.projectKey=$PROJECT_NAME
+
+.docker_build_template: &docker_build_template
+  stage: docker_build
+  script:
+    - echo "Building Docker image..."
+    - docker build -t $PROJECT_NAME:$CI_COMMIT_SHA .
+    - docker tag $PROJECT_NAME:$CI_COMMIT_SHA $DOCKER_REGISTRY/$PROJECT_NAME:$CI_COMMIT_SHA
+
+.publish_template: &publish_template
+  stage: publish
+  script:
+    - echo "Publishing artifacts..."
+    {% if build_tool == "yarn" %}
+    - yarn publish --non-interactive
+    {% elif build_tool == "pnpm" %}
+    - pnpm publish
+    {% else %}
+    - npm publish
+    {% endif %}
+    - docker push $DOCKER_REGISTRY/$PROJECT_NAME:$CI_COMMIT_SHA
+
+.deploy_staging_template: &deploy_staging_template
+  stage: deploy_staging
+  script:
+    - echo "Deploying to staging environment..."
+    - kubectl set image deployment/$PROJECT_NAME $PROJECT_NAME=$DOCKER_REGISTRY/$PROJECT_NAME:$CI_COMMIT_SHA -n staging
+  only:
+    - develop
+
+.deploy_production_template: &deploy_production_template
+  stage: deploy_production
+  script:
+    - echo "Deploying to production environment..."
+    - kubectl set image deployment/$PROJECT_NAME $PROJECT_NAME=$DOCKER_REGISTRY/$PROJECT_NAME:$CI_COMMIT_SHA -n production
+  only:
+    - main
+
+build:
+  <<: *build_template
+
+unit_tests:
+  <<: *test_template
+  script:
+    - echo "Running unit tests..."
+    {% if build_tool == "yarn" %}
+    - yarn test:unit
+    {% elif build_tool == "pnpm" %}
+    - pnpm test:unit
+    {% else %}
+    - npm run test:unit
+    {% endif %}
+
+integration_tests:
+  <<: *test_template
+  script:
+    - echo "Running integration tests..."
+    {% if build_tool == "yarn" %}
+    - yarn test:integration
+    {% elif build_tool == "pnpm" %}
+    - pnpm test:integration
+    {% else %}
+    - npm run test:integration
+    {% endif %}
+
+code_analysis:
+  <<: *code_analysis_template
+
+docker_build:
+  <<: *docker_build_template
+
+publish:
+  <<: *publish_template
+  dependencies:
+    - build
+    - unit_tests
+    - integration_tests
+
+deploy_staging:
+  <<: *deploy_staging_template
+  dependencies:
+    - publish
+
+deploy_production:
+  <<: *deploy_production_template
+  dependencies:
+    - publish
+
+cache:
+  paths:
+    {% if build_tool == "yarn" %}
+    - .yarn/cache
+    - node_modules
+    {% elif build_tool == "pnpm" %}
+    - .pnpm-store
+    - node_modules
+    {% else %}
+    - node_modules
+    {% endif %}

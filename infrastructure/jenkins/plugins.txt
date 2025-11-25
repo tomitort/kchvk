@@ -1,0 +1,62 @@
+# Jenkins плагины для Self-Deploy CI/CD
+# Основные плагины для поддержки всех этапов CI/CD пайплайна
+
+# Pipeline и DSL
+workflow-aggregator
+pipeline-stage-view
+pipeline-model-definition
+pipeline-milestone-step
+pipeline-input-step
+pipeline-build-step
+pipeline-github-lib
+
+# Git и SCM
+git
+github
+gitlab-plugin
+bitbucket
+
+# Build Tools
+maven-plugin
+gradle
+npm
+nodejs
+docker-plugin
+docker-workflow
+
+# Testing и Quality
+junit
+jacoco
+cobertura
+htmlpublisher
+
+# Code Analysis
+sonar
+checkstyle
+pmd
+findbugs
+warnings-ng
+
+# Artifact Management
+nexus-artifact-uploader
+artifactory
+docker-build-publish
+
+# Deployment и Orchestration
+kubernetes
+ssh-slaves
+ssh
+publish-over-ssh
+
+# Notifications
+email-ext
+mailer
+slack
+telegram
+
+# UI и Utilities
+blueocean
+simple-theme-plugin
+timestamper
+build-timeout
+credentials-binding

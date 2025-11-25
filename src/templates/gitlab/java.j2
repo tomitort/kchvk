@@ -1,0 +1,144 @@
+stages:
+  - build
+  - test
+  - code_analysis
+  - docker_build
+  - publish
+  - deploy_staging
+  - deploy_production
+
+variables:
+  PROJECT_NAME: "{{ project_name }}"
+  DOCKER_REGISTRY: "{{ docker_registry }}"
+  NEXUS_URL: "{{ nexus_url }}"
+  SONAR_URL: "{{ sonar_url }}"
+
+.build_template: &build_template
+  stage: build
+  script:
+    - echo "Building $PROJECT_NAME..."
+    {% if build_tool == "maven" %}
+    - mvn clean compile -DskipTests
+    {% elif build_tool == "gradle" %}
+    - gradle clean build -x test
+    {% endif %}
+  artifacts:
+    paths:
+      - target/*.jar
+    expire_in: 1 week
+
+.test_template: &test_template
+  stage: test
+  script:
+    - echo "Running tests..."
+    {% if build_tool == "maven" %}
+    - mvn test
+    {% elif build_tool == "gradle" %}
+    - gradle test
+    {% endif %}
+  artifacts:
+    reports:
+      junit:
+        - target/surefire-reports/*.xml
+        - target/failsafe-reports/*.xml
+
+.code_analysis_template: &code_analysis_template
+  stage: code_analysis
+  script:
+    - echo "Running code analysis with SonarQube..."
+    {% if build_tool == "maven" %}
+    - mvn sonar:sonar -Dsonar.projectKey=$PROJECT_NAME
+    {% elif build_tool == "gradle" %}
+    - gradle sonarqube -Dsonar.projectKey=$PROJECT_NAME
+    {% endif %}
+
+.docker_build_template: &docker_build_template
+  stage: docker_build
+  script:
+    - echo "Building Docker image..."
+    - docker build -t $PROJECT_NAME:$CI_COMMIT_SHA .
+    - docker tag $PROJECT_NAME:$CI_COMMIT_SHA $DOCKER_REGISTRY/$PROJECT_NAME:$CI_COMMIT_SHA
+
+.publish_template: &publish_template
+  stage: publish
+  script:
+    - echo "Publishing artifacts..."
+    - docker push $DOCKER_REGISTRY/$PROJECT_NAME:$CI_COMMIT_SHA
+    {% if build_tool == "maven" %}
+    - mvn deploy -DskipTests
+    {% endif %}
+
+.deploy_staging_template: &deploy_staging_template
+  stage: deploy_staging
+  script:
+    - echo "Deploying to staging environment..."
+    - kubectl set image deployment/$PROJECT_NAME $PROJECT_NAME=$DOCKER_REGISTRY/$PROJECT_NAME:$CI_COMMIT_SHA -n staging
+  only:
+    - develop
+
+.deploy_production_template: &deploy_production_template
+  stage: deploy_production
+  script:
+    - echo "Deploying to production environment..."
+    - kubectl set image deployment/$PROJECT_NAME $PROJECT_NAME=$DOCKER_REGISTRY/$PROJECT_NAME:$CI_COMMIT_SHA -n production
+  only:
+    - main
+
+build:
+  <<: *build_template
+
+unit_tests:
+  <<: *test_template
+  script:
+    - echo "Running unit tests..."
+    {% if build_tool == "maven" %}
+    - mvn test
+    {% elif build_tool == "gradle" %}
+    - gradle test
+    {% endif %}
+
+integration_tests:
+  <<: *test_template
+  script:
+    - echo "Running integration tests..."
+    {% if build_tool == "maven" %}
+    - mvn verify -DskipUnitTests
+    {% elif build_tool == "gradle" %}
+    - gradle integrationTest
+    {% endif %}
+
+code_analysis:
+  <<: *code_analysis_template
+
+docker_build:
+  <<: *docker_build_template
+
+publish:
+  <<: *publish_template
+  dependencies:
+    - build
+    - unit_tests
+    - integration_tests
+
+deploy_staging:
+  <<: *deploy_staging_template
+  dependencies:
+    - publish
+
+deploy_production:
+  <<: *deploy_production_template
+  dependencies:
+    - publish
+
+cache:
+  paths:
+    {% if build_tool == "maven" %}
+    - .m2/repository
+    - target/
+    {% elif build_tool == "gradle" %}
+    - .gradle/caches
+    - .gradle/wrapper
+    - build/
+    {% endif %}
+  key: "$CI_COMMIT_REF_SLUG"
+  policy: pull-push

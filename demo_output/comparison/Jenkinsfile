@@ -1,0 +1,129 @@
+pipeline {
+    agent any
+    tools {
+        python 'Python3'
+    }
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
+    }
+    stages {
+        stage('Build') {
+            steps {
+                script {
+                    echo 'Building test_python_project...'
+                    sh 'pip install -r requirements.txt'
+                    sh 'python setup.py build'
+                }
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: 'dist/**/*', fingerprint: true
+                }
+            }
+        }
+        stage('Test') {
+            parallel {
+                stage('Unit Tests') {
+                    steps {
+                        script {
+                            echo 'Running unit tests...'
+                            sh 'pytest tests/unit -v --junitxml=test-results/unit.xml'
+                        }
+                    }
+                    post {
+                        always {
+                            junit 'test-results/unit.xml'
+                        }
+                    }
+                }
+                stage('Integration Tests') {
+                    steps {
+                        script {
+                            echo 'Running integration tests...'
+                            sh 'pytest tests/integration -v --junitxml=test-results/integration.xml'
+                        }
+                    }
+                    post {
+                        always {
+                            junit 'test-results/integration.xml'
+                        }
+                    }
+                }
+            }
+        }
+        stage('Code Analysis') {
+            steps {
+                script {
+                    echo 'Running code analysis with SonarQube...'
+                    withSonarQubeEnv('SonarQube') {
+                        sh 'coverage run -m pytest'
+                        sh 'coverage xml'
+                        sh 'sonar-scanner -Dsonar.projectKey=test_python_project -Dsonar.python.coverage.reportPaths=coverage.xml'
+                    }
+                }
+            }
+        }
+        stage('Docker Build') {
+            steps {
+                script {
+                    echo 'Building Docker image...'
+                    sh '''
+                        docker build -t test_python_project:${BUILD_NUMBER} .
+                        docker tag test_python_project:${BUILD_NUMBER} registry.example.com/test_python_project:${BUILD_NUMBER}
+                    '''
+                }
+            }
+        }
+        stage('Publish Artifacts') {
+            steps {
+                script {
+                    echo 'Publishing artifacts...'
+                    sh 'twine upload dist/* --username $NEXUS_USERNAME --password $NEXUS_PASSWORD'
+                    sh 'docker push registry.example.com/test_python_project:${BUILD_NUMBER}'
+                }
+            }
+        }
+        stage('Deploy to Staging') {
+            when {
+                branch 'develop'
+            }
+            steps {
+                script {
+                    echo 'Deploying to staging environment...'
+                    sh 'kubectl set image deployment/test_python_project test_python_project=registry.example.com/test_python_project:${BUILD_NUMBER} -n staging'
+                }
+            }
+        }
+        stage('Deploy to Production') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    echo 'Deploying to production environment...'
+                    sh 'kubectl set image deployment/test_python_project test_python_project=registry.example.com/test_python_project:${BUILD_NUMBER} -n production'
+                }
+            }
+        }
+    }
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            emailext (
+                subject: "SUCCESS: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+                body: "Project ${project_name} built successfully. Build URL: ${env.BUILD_URL}",
+                to: "${env.CHANGE_AUTHOR_EMAIL}"
+            )
+        }
+        failure {
+            emailext (
+                subject: "FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+                body: "Project ${project_name} build failed. Build URL: ${env.BUILD_URL}",
+                to: "${env.CHANGE_AUTHOR_EMAIL}"
+            )
+        }
+    }
+}

@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  self-deploy-ci-cd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: self-deploy-ci-cd
+    volumes:
+      - ./output:/home/app/output
+      - ./examples:/home/app/examples
+      - ./demo_output:/home/app/demo_output
+    environment:
+      - PYTHONPATH=/home/app/src
+      - PYTHONUNBUFFERED=1
+    working_dir: /home/app
+    command: ["--help"]
+    networks:
+      - self-deploy-network
+
+  # Локальная инфраструктура для тестирования (опционально)
+  jenkins:
+    image: jenkins/jenkins:lts
+    container_name: jenkins
+    privileged: true
+    user: root
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    environment:
+      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
+    volumes:
+      - jenkins_data:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - self-deploy-network
+    restart: unless-stopped
+
+  gitlab:
+    image: gitlab/gitlab-ce:latest
+    container_name: gitlab
+    hostname: gitlab.example.com
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://localhost:8081'
+        gitlab_rails['gitlab_shell_ssh_port'] = 2222
+        gitlab_rails['initial_root_password'] = 'admin123'
+    ports:
+      - "8081:80"
+      - "2222:22"
+    volumes:
+      - gitlab_data:/var/opt/gitlab
+      - gitlab_logs:/var/log/gitlab
+      - gitlab_config:/etc/gitlab
+    networks:
+      - self-deploy-network
+    restart: unless-stopped
+    shm_size: '256m'
+
+  sonarqube:
+    image: sonarqube:lts-community
+    container_name: sonarqube
+    environment:
+      - SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true
+    ports:
+      - "9000:9000"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_logs:/opt/sonarqube/logs
+    networks:
+      - self-deploy-network
+    restart: unless-stopped
+
+  nexus:
+    image: sonatype/nexus3:latest
+    container_name: nexus
+    ports:
+      - "8082:8081"
+    environment:
+      - NEXUS_CONTEXT=/
+    volumes:
+      - nexus_data:/nexus-data
+    networks:
+      - self-deploy-network
+    restart: unless-stopped
+
+volumes:
+  jenkins_data:
+  gitlab_data:
+  gitlab_logs:
+  gitlab_config:
+  sonarqube_data:
+  sonarqube_extensions:
+  sonarqube_logs:
+  nexus_data:
+
+networks:
+  self-deploy-network:
+    driver: bridge

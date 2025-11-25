@@ -1,0 +1,142 @@
+version: '3.8'
+
+services:
+  # Jenkins CI/CD
+  jenkins:
+    image: jenkins/jenkins:lts
+    container_name: jenkins
+    privileged: true
+    user: root
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    environment:
+      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
+    volumes:
+      - jenkins_data:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./jenkins/plugins.txt:/usr/share/jenkins/ref/plugins.txt
+    networks:
+      - ci-cd-network
+    restart: unless-stopped
+
+  # GitLab CI/CD
+  gitlab:
+    image: gitlab/gitlab-ce:latest
+    container_name: gitlab
+    hostname: gitlab.example.com
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://localhost:8081'
+        gitlab_rails['gitlab_shell_ssh_port'] = 2222
+        gitlab_rails['initial_root_password'] = 'admin123'
+    ports:
+      - "8081:80"
+      - "2222:22"
+    volumes:
+      - gitlab_data:/var/opt/gitlab
+      - gitlab_logs:/var/log/gitlab
+      - gitlab_config:/etc/gitlab
+    networks:
+      - ci-cd-network
+    restart: unless-stopped
+    shm_size: '256m'
+
+  # SonarQube для анализа кода
+  sonarqube:
+    image: sonarqube:lts-community
+    container_name: sonarqube
+    environment:
+      - SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true
+      - SONARQUBE_JDBC_URL=jdbc:postgresql://postgres:5432/sonar
+      - SONARQUBE_JDBC_USERNAME=sonar
+      - SONARQUBE_JDBC_PASSWORD=sonar
+    ports:
+      - "9000:9000"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_logs:/opt/sonarqube/logs
+    networks:
+      - ci-cd-network
+    restart: unless-stopped
+    depends_on:
+      - postgres
+
+  # Nexus Repository Manager для артефактов
+  nexus:
+    image: sonatype/nexus3:latest
+    container_name: nexus
+    ports:
+      - "8082:8081"
+    environment:
+      - NEXUS_CONTEXT=/
+    volumes:
+      - nexus_data:/nexus-data
+    networks:
+      - ci-cd-network
+    restart: unless-stopped
+
+  # PostgreSQL для GitLab и SonarQube
+  postgres:
+    image: postgres:13
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_MULTIPLE_DATABASES: sonar,gitlab
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d
+    networks:
+      - ci-cd-network
+    restart: unless-stopped
+
+  # Docker Registry для хранения образов
+  registry:
+    image: registry:2
+    container_name: registry
+    ports:
+      - "5000:5000"
+    environment:
+      REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /data
+      REGISTRY_HTTP_TLS_CERTIFICATE: /certs/domain.crt
+      REGISTRY_HTTP_TLS_KEY: /certs/domain.key
+    volumes:
+      - registry_data:/data
+      - ./certs:/certs
+    networks:
+      - ci-cd-network
+    restart: unless-stopped
+
+  # Portainer для управления Docker
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    ports:
+      - "9001:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    networks:
+      - ci-cd-network
+    restart: unless-stopped
+
+volumes:
+  jenkins_data:
+  gitlab_data:
+  gitlab_logs:
+  gitlab_config:
+  sonarqube_data:
+  sonarqube_extensions:
+  sonarqube_logs:
+  nexus_data:
+  postgres_data:
+  registry_data:
+  portainer_data:
+
+networks:
+  ci-cd-network:
+    driver: bridge
+    name: ci-cd-network

@@ -1,0 +1,112 @@
+stages:
+  - build
+  - test
+  - code_analysis
+  - docker_build
+  - publish
+  - deploy_staging
+  - deploy_production
+
+variables:
+  PROJECT_NAME: "test_js_project"
+  DOCKER_REGISTRY: "registry.example.com"
+
+.build_template: &build_template
+  stage: build
+  script:
+    - echo "Building $PROJECT_NAME..."
+    - npm ci
+    - npm run build
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
+
+.test_template: &test_template
+  stage: test
+  script:
+    - echo "Running tests..."
+    - npm run test:unit
+  artifacts:
+    reports:
+      junit:
+        - test-results/*.xml
+
+.code_analysis_template: &code_analysis_template
+  stage: code_analysis
+  script:
+    - echo "Running code analysis with SonarQube..."
+    - npm run test:coverage
+    - sonar-scanner -Dsonar.projectKey=$PROJECT_NAME
+
+.docker_build_template: &docker_build_template
+  stage: docker_build
+  script:
+    - echo "Building Docker image..."
+    - docker build -t $PROJECT_NAME:$CI_COMMIT_SHA .
+    - docker tag $PROJECT_NAME:$CI_COMMIT_SHA $DOCKER_REGISTRY/$PROJECT_NAME:$CI_COMMIT_SHA
+
+.publish_template: &publish_template
+  stage: publish
+  script:
+    - echo "Publishing artifacts..."
+    - npm publish
+    - docker push $DOCKER_REGISTRY/$PROJECT_NAME:$CI_COMMIT_SHA
+
+.deploy_staging_template: &deploy_staging_template
+  stage: deploy_staging
+  script:
+    - echo "Deploying to staging environment..."
+    - kubectl set image deployment/$PROJECT_NAME $PROJECT_NAME=$DOCKER_REGISTRY/$PROJECT_NAME:$CI_COMMIT_SHA -n staging
+  only:
+    - develop
+
+.deploy_production_template: &deploy_production_template
+  stage: deploy_production
+  script:
+    - echo "Deploying to production environment..."
+    - kubectl set image deployment/$PROJECT_NAME $PROJECT_NAME=$DOCKER_REGISTRY/$PROJECT_NAME:$CI_COMMIT_SHA -n production
+  only:
+    - main
+
+build:
+  <<: *build_template
+
+unit_tests:
+  <<: *test_template
+  script:
+    - echo "Running unit tests..."
+    - npm run test:unit
+
+integration_tests:
+  <<: *test_template
+  script:
+    - echo "Running integration tests..."
+    - npm run test:integration
+
+code_analysis:
+  <<: *code_analysis_template
+
+docker_build:
+  <<: *docker_build_template
+
+publish:
+  <<: *publish_template
+  dependencies:
+    - build
+    - unit_tests
+    - integration_tests
+
+deploy_staging:
+  <<: *deploy_staging_template
+  dependencies:
+    - publish
+
+deploy_production:
+  <<: *deploy_production_template
+  dependencies:
+    - publish
+
+cache:
+  paths:
+    - node_modules

@@ -1,0 +1,163 @@
+pipeline {
+    agent any
+    tools {
+        {% if build_tool == "maven" %}
+        maven 'M3'
+        {% elif build_tool == "gradle" %}
+        gradle 'Gradle'
+        {% endif %}
+        jdk 'JDK11'
+    }
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
+    }
+    environment {
+        DOCKER_REGISTRY = '{{ docker_registry }}'
+        NEXUS_URL = '{{ nexus_url }}'
+        SONAR_URL = '{{ sonar_url }}'
+    }
+    stages {
+        stage('Build') {
+            steps {
+                script {
+                    echo 'Building {{ project_name }}...'
+                    // Restore cached dependencies
+                    {% if build_tool == "maven" %}
+                    unstash 'm2-cache'
+                    sh 'mvn clean compile -DskipTests'
+                    {% elif build_tool == "gradle" %}
+                    unstash 'gradle-cache'
+                    sh 'gradle clean build -x test'
+                    {% endif %}
+                }
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: '**/target/*.jar', fingerprint: true
+                    // Stash dependencies for caching
+                    {% if build_tool == "maven" %}
+                    stash name: 'm2-cache', includes: '.m2/**/*'
+                    {% elif build_tool == "gradle" %}
+                    stash name: 'gradle-cache', includes: '.gradle/**/*, build/**/*'
+                    {% endif %}
+                }
+            }
+        }
+        stage('Test') {
+            parallel {
+                stage('Unit Tests') {
+                    steps {
+                        script {
+                            echo 'Running unit tests...'
+                            {% if build_tool == "maven" %}
+                            sh 'mvn test'
+                            {% elif build_tool == "gradle" %}
+                            sh 'gradle test'
+                            {% endif %}
+                        }
+                    }
+                    post {
+                        always {
+                            junit '**/target/surefire-reports/*.xml'
+                        }
+                    }
+                }
+                stage('Integration Tests') {
+                    steps {
+                        script {
+                            echo 'Running integration tests...'
+                            {% if build_tool == "maven" %}
+                            sh 'mvn verify -DskipUnitTests'
+                            {% elif build_tool == "gradle" %}
+                            sh 'gradle integrationTest'
+                            {% endif %}
+                        }
+                    }
+                    post {
+                        always {
+                            junit '**/target/failsafe-reports/*.xml'
+                        }
+                    }
+                }
+            }
+        }
+        stage('Code Analysis') {
+            steps {
+                script {
+                    echo 'Running code analysis with SonarQube...'
+                    withSonarQubeEnv('SonarQube') {
+                        {% if build_tool == "maven" %}
+                        sh 'mvn sonar:sonar -Dsonar.projectKey={{ project_name }}'
+                        {% elif build_tool == "gradle" %}
+                        sh 'gradle sonarqube -Dsonar.projectKey={{ project_name }}'
+                        {% endif %}
+                    }
+                }
+            }
+        }
+        stage('Docker Build') {
+            steps {
+                script {
+                    echo 'Building Docker image with multi-stage build...'
+                    sh '''
+                        docker build -t {{ project_name }}:${BUILD_NUMBER} -f Dockerfile.multi-stage .
+                        docker tag {{ project_name }}:${BUILD_NUMBER} ${DOCKER_REGISTRY}/{{ project_name }}:${BUILD_NUMBER}
+                    '''
+                }
+            }
+        }
+        stage('Publish Artifacts') {
+            steps {
+                script {
+                    echo 'Publishing artifacts to Nexus...'
+                    {% if build_tool == "maven" %}
+                    sh 'mvn deploy -DskipTests'
+                    {% endif %}
+                    sh 'docker push {{ docker_registry }}/{{ project_name }}:${BUILD_NUMBER}'
+                }
+            }
+        }
+        stage('Deploy to Staging') {
+            when {
+                branch 'develop'
+            }
+            steps {
+                script {
+                    echo 'Deploying to staging environment...'
+                    sh 'kubectl set image deployment/{{ project_name }} {{ project_name }}={{ docker_registry }}/{{ project_name }}:${BUILD_NUMBER} -n staging'
+                }
+            }
+        }
+        stage('Deploy to Production') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    echo 'Deploying to production environment...'
+                    sh 'kubectl set image deployment/{{ project_name }} {{ project_name }}={{ docker_registry }}/{{ project_name }}:${BUILD_NUMBER} -n production'
+                }
+            }
+        }
+    }
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            emailext (
+                subject: "SUCCESS: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+                body: "Project ${project_name} built successfully. Build URL: ${env.BUILD_URL}",
+                to: "${env.CHANGE_AUTHOR_EMAIL}"
+            )
+        }
+        failure {
+            emailext (
+                subject: "FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
+                body: "Project ${project_name} build failed. Build URL: ${env.BUILD_URL}",
+                to: "${env.CHANGE_AUTHOR_EMAIL}"
+            )
+        }
+    }
+}

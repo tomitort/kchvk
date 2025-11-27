@@ -12,7 +12,7 @@ class GitLabGenerator(BaseGenerator):
     
     def __init__(self):
         template_dir = str(Path(__file__).parent.parent / "templates" / "gitlab")
-        super().__init__(template_dir)
+        super().__init__(template_dir, "gitlab")
     
     def generate(self, analysis: ProjectAnalysis, output_path: str) -> CICDConfig:
         """Генерирует .gitlab-ci.yml на основе анализа проекта"""

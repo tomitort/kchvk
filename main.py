@@ -15,13 +15,11 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 from src.analyzers import RepositoryAnalyzer
 from src.generators import JenkinsGenerator, GitLabGenerator
 from src.utils.reporting import (
-    print_welcome_message, 
-    print_supported_technologies,
     print_summary,
     print_error_summary,
-    generate_analysis_report,
-    generate_cicd_report,
-    save_report_to_file
+    print_success_message,
+    print_technology_detection,
+    print_configuration_preview
 )
 
 
@@ -45,8 +43,8 @@ def parse_arguments():
     )
     
     parser.add_argument(
-        '--system', 
-        choices=['jenkins', 'gitlab'],
+        '--system',
+        choices=['jenkins', 'gitlab', 'both'],
         default='jenkins',
         help='CI/CD система (по умолчанию: jenkins)'
     )
@@ -80,12 +78,14 @@ def validate_arguments(args):
     return True
 
 
-def get_generator(system: str):
-    """Возвращает соответствующий генератор для выбранной CI/CD системы"""
+def get_generators(system: str):
+    """Возвращает соответствующие генераторы для выбранной CI/CD системы"""
     if system == 'jenkins':
-        return JenkinsGenerator()
+        return [JenkinsGenerator()]
     elif system == 'gitlab':
-        return GitLabGenerator()
+        return [GitLabGenerator()]
+    elif system == 'both':
+        return [JenkinsGenerator(), GitLabGenerator()]
     else:
         raise ValueError(f"Неподдерживаемая CI/CD система: {system}")
 
@@ -96,8 +96,8 @@ def main():
     
     try:
         # Выводим приветственное сообщение
-        print_welcome_message()
-        print_supported_technologies()
+        print("\n🚀 Self-Deploy CI/CD - Автоматическая генерация CI/CD конфигураций")
+        print("📋 Поддерживаемые технологии: Java, Go, JavaScript/TypeScript, Python")
         
         if args.verbose:
             print(f"\n🔧 ПАРАМЕТРЫ ЗАПУСКА:")
@@ -109,9 +109,9 @@ def main():
         # Валидируем аргументы
         validate_arguments(args)
         
-        # Создаем анализатор и генератор
+        # Создаем анализатор и генераторы
         analyzer = RepositoryAnalyzer()
-        generator = get_generator(args.system)
+        generators = get_generators(args.system)
         
         print(f"\n🚀 ЗАПУСК АНАЛИЗА РЕПОЗИТОРИЯ...")
         
@@ -126,36 +126,36 @@ def main():
             print(f"   Инструмент сборки: {analysis.build_tool}")
             print(f"   Зависимости: {len(analysis.dependencies)}")
         
-        # Генерируем конфигурацию
-        print(f"\n🚀 ГЕНЕРАЦИЯ CI/CD КОНФИГУРАЦИИ...")
+        # Генерируем конфигурации для всех выбранных систем
+        output_files = []
+        configs = []
         
-        output_filename = generator.get_output_filename(analysis)
-        output_path = str(Path(args.output) / output_filename)
+        for generator in generators:
+            print(f"\n🚀 ГЕНЕРАЦИЯ {generator.system_name.upper()} КОНФИГУРАЦИИ...")
+            
+            output_filename = generator.get_output_filename(analysis)
+            output_path = str(Path(args.output) / output_filename)
+            
+            config = generator.generate(analysis, output_path)
+            configs.append(config)
+            output_files.append(output_path)
+            
+            # Валидируем сгенерированную конфигурацию
+            if generator.validate(config.config_content):
+                print(f"✅ {generator.system_name.upper()} КОНФИГУРАЦИЯ УСПЕШНО ВАЛИДИРОВАНА")
+            else:
+                print(f"⚠️  ПРЕДУПРЕЖДЕНИЕ: {generator.system_name.upper()} конфигурация может содержать синтаксические ошибки")
         
-        config = generator.generate(analysis, output_path)
+        # Выводим сводку для первой конфигурации
+        if configs:
+            print_summary(analysis, configs[0].config_content, output_files[0])
         
-        # Валидируем сгенерированную конфигурацию
-        if generator.validate(config.config_content):
-            print("✅ КОНФИГУРАЦИЯ УСПЕШНО ВАЛИДИРОВАНА")
-        else:
-            print("⚠️  ПРЕДУПРЕЖДЕНИЕ: Конфигурация может содержать синтаксические ошибки")
+        # Выводим успешное сообщение
+        print_success_message(output_files)
         
-        # Сохраняем отчеты
-        analysis_report = generate_analysis_report(analysis)
-        cicd_report = generate_cicd_report(config, output_path)
-        
-        analysis_report_path = save_report_to_file(analysis_report, args.output, "analysis")
-        cicd_report_path = save_report_to_file(cicd_report, args.output, "cicd")
-        
-        if args.verbose:
-            print(f"📊 ОТЧЕТЫ СОХРАНЕНЫ:")
-            print(f"   Анализ: {analysis_report_path}")
-            print(f"   CI/CD: {cicd_report_path}")
-        
-        # Выводим сводку
-        print_summary(analysis, config, output_path)
-        
-        print(f"\n🎉 САМОРАЗВЕРТЫВАНИЕ CI/CD УСПЕШНО ЗАВЕРШЕНО!")
+        # Показываем превью первой конфигурации
+        if args.verbose and configs:
+            print_configuration_preview(configs[0].config_content)
         
     except Exception as e:
         print_error_summary(e, "основной процесс")

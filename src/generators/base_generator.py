@@ -8,8 +8,9 @@ from ..analyzers.models import ProjectAnalysis, CICDConfig
 class BaseGenerator(ABC):
     """Базовый класс для генераторов CI/CD конфигураций"""
     
-    def __init__(self, template_dir: str):
+    def __init__(self, template_dir: str, system_name: str):
         self.template_dir = template_dir
+        self.system_name = system_name
         self.template_engine = None
         self._setup_template_engine()
     

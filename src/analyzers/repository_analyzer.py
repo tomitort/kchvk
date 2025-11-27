@@ -16,10 +16,10 @@ class RepositoryAnalyzer:
     
     def __init__(self):
         self.detectors = [
+            PythonDetector(),  # Python первый для приоритета над JS в смешанных проектах
             JavaDetector(),
             GoDetector(),
-            JSDetector(),
-            PythonDetector()
+            JSDetector()
         ]
         self.temp_dirs = []
     
@@ -30,13 +30,19 @@ class RepositoryAnalyzer:
             self.temp_dirs.append(temp_dir)
             
             print(f"Клонирование репозитория: {repo_url}")
-            git.Repo.clone_from(repo_url, temp_dir)
+            # Используем shallow clone для экономии места (только последний коммит)
+            # Добавляем single-branch для еще большей экономии места
+            git.Repo.clone_from(repo_url, temp_dir, depth=1, single_branch=True)
             print(f"Репо клонирован в: {temp_dir}")
             
             return temp_dir
         except git.GitCommandError as e:
+            # Очистка при ошибке клонирования
+            self.cleanup_temp_dirs()
             raise Exception(f"Ошибка клонирования репозитория: {e}")
         except Exception as e:
+            # Очистка при любой другой ошибке
+            self.cleanup_temp_dirs()
             raise Exception(f"Неожиданная ошибка при клонировании: {e}")
     
     def analyze_project(self, repo_url: str) -> ProjectAnalysis:

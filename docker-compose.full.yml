@@ -1,6 +1,24 @@
-version: '3.8'
+name: self-deploy-ci-cd
 
 services:
+  # Основное приложение Self-Deploy CI/CD
+  self-deploy-ci-cd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: self-deploy-ci-cd
+    volumes:
+      - ./output:/home/app/output
+      - ./examples:/home/app/examples
+      - ./demo_output:/home/app/demo_output
+    environment:
+      - PYTHONPATH=/home/app/src
+      - PYTHONUNBUFFERED=1
+    working_dir: /home/app
+    command: ["--help"]
+    networks:
+      - ci-cd-network
+
   # Jenkins CI/CD
   jenkins:
     image: jenkins/jenkins:lts
@@ -15,7 +33,7 @@ services:
     volumes:
       - jenkins_data:/var/jenkins_home
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./jenkins/plugins.txt:/usr/share/jenkins/ref/plugins.txt
+      - ./infrastructure/jenkins/plugins.txt:/usr/share/jenkins/ref/plugins.txt
     networks:
       - ci-cd-network
     restart: unless-stopped
@@ -30,6 +48,13 @@ services:
         external_url 'http://localhost:8081'
         gitlab_rails['gitlab_shell_ssh_port'] = 2222
         gitlab_rails['initial_root_password'] = 'admin123'
+        gitlab_rails['db_adapter'] = 'postgresql'
+        gitlab_rails['db_encoding'] = 'unicode'
+        gitlab_rails['db_host'] = 'postgres'
+        gitlab_rails['db_port'] = '5432'
+        gitlab_rails['db_username'] = 'gitlab'
+        gitlab_rails['db_password'] = 'gitlab'
+        gitlab_rails['db_database'] = 'gitlabhq_production'
     ports:
       - "8081:80"
       - "2222:22"
@@ -41,6 +66,8 @@ services:
       - ci-cd-network
     restart: unless-stopped
     shm_size: '256m'
+    depends_on:
+      - postgres
 
   # SonarQube для анализа кода
   sonarqube:
@@ -87,7 +114,7 @@ services:
       POSTGRES_DB: postgres
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./postgres-init:/docker-entrypoint-initdb.d
+      - ./infrastructure/postgres-init:/docker-entrypoint-initdb.d
     networks:
       - ci-cd-network
     restart: unless-stopped
@@ -100,11 +127,8 @@ services:
       - "5000:5000"
     environment:
       REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /data
-      REGISTRY_HTTP_TLS_CERTIFICATE: /certs/domain.crt
-      REGISTRY_HTTP_TLS_KEY: /certs/domain.key
     volumes:
       - registry_data:/data
-      - ./certs:/certs
     networks:
       - ci-cd-network
     restart: unless-stopped

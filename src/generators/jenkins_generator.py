@@ -11,7 +11,7 @@ class JenkinsGenerator(BaseGenerator):
     
     def __init__(self):
         template_dir = str(Path(__file__).parent.parent / "templates" / "jenkins")
-        super().__init__(template_dir)
+        super().__init__(template_dir, "jenkins")
     
     def generate(self, analysis: ProjectAnalysis, output_path: str) -> CICDConfig:
         """Генерирует Jenkinsfile на основе анализа проекта"""
